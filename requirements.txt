@@ -3,3 +3,4 @@ markdown
 pyyaml
 typing_extensions
 matrix-nio[e2e]
+geoip2==4.6.0

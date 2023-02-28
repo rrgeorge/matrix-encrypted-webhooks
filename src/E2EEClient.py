@@ -1,14 +1,19 @@
-import asyncio
+import aiohttp
 import json
 import logging
 import os
 import sys
 from typing import Optional
 
-import yaml
 from markdown import markdown
-from nio import (AsyncClient, AsyncClientConfig, LoginResponse, MatrixRoom,
-                 RoomMessageText, SyncResponse)
+from nio import (
+    AsyncClient,
+    AsyncClientConfig,
+    LoginResponse,
+    MatrixRoom,
+    RoomMessageText,
+    SyncResponse,
+)
 from termcolor import colored
 
 
@@ -105,6 +110,9 @@ class E2EEClient:
             f"@{room.user_name(event.sender)} in {room.display_name} | {event.body}",
             'green'
         ))
+        if event.body == "!users":
+            await self.get_users(room.room_id)
+        await self.client.update_receipt_marker(room.room_id, event.event_id)
 
     async def _sync_callback(self, response: SyncResponse) -> None:
         logging.info(f"We synced, token: {response.next_batch}")
@@ -112,7 +120,10 @@ class E2EEClient:
         if not self.greeting_sent:
             self.greeting_sent = True
 
-            greeting = f"Hi, I'm up and runnig from **{os.environ['MATRIX_DEVICE']}**, waiting for webhooks!"
+            greeting = (
+                    f"Hi, I'm up and runnig from **{os.environ['MATRIX_DEVICE']}**, "
+                    f"waiting for webhooks!"
+                    )
             await self.send_message(greeting, os.environ['MATRIX_ADMIN_ROOM'], 'Webhook server')
 
     async def send_message(
@@ -149,18 +160,25 @@ class E2EEClient:
             ignore_unverified_devices=True
         )
 
+    async def get_users(self, room) -> None:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{os.environ['MASTODON_INSTANCE']}/nodeinfo/2.0") as response:
+                if response.status == 200:
+                    json = await response.json()
+                    stats = (
+                            f"## Current User Stats:  \n"
+                            f"**Active users:** {json['usage']['users']['activeMonth']},  \n"
+                            f"**Total users**: {json['usage']['users']['total']}"
+                            )
+                    await self.send_message(stats, room, 'Command')
+
     async def run(self) -> None:
         await self.login()
 
         self.client.add_event_callback(self._message_callback, RoomMessageText)
         self.client.add_response_callback(self._sync_callback, SyncResponse)
-
         if self.client.should_upload_keys:
             await self.client.keys_upload()
-
-        for room in self.join_rooms:
-            await self.client.join(room)
-        await self.client.joined_rooms()
 
         logging.info('The Matrix client is waiting for events.')
 

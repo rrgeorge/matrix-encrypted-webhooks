@@ -7,7 +7,6 @@ import traceback
 from E2EEClient import E2EEClient
 from WebhookServer import WebhookServer
 
-
 async def main() -> None:
     logging.basicConfig(
         level=logging.getLevelName(

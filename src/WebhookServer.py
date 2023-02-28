@@ -7,7 +7,7 @@ import yaml
 from aiohttp import web
 
 from E2EEClient import E2EEClient
-
+from MastodonFormatter import formatMastodonHook
 
 class WebhookServer:
     def __init__(self):
@@ -39,6 +39,11 @@ class WebhookServer:
             return json.dumps(data, indent=2, ensure_ascii=(not allow_unicode))
         if msg_format == 'yaml':
             return yaml.dump(data, indent=2, allow_unicode=allow_unicode)
+        if msg_format == 'grafana':
+            message = data['message'].replace("\n", "  \n")
+            return f"## {data['title']}  {os.linesep}{message}"
+        if msg_format == 'mastodon':
+            return formatMastodonHook(data)
 
     async def _get_index(self, request: web.Request) -> web.Response:
         return web.json_response({'success': True})
@@ -64,6 +69,9 @@ class WebhookServer:
             logging.error(
                 f"Message format '{message_format}' is not allowed, please check the config.")
             return web.json_response({'error': 'Gateway configured with unknown message format'}, status=415)
+
+        if 'format' in request.query and request.query['format']:
+            message_format = request.query['format']
 
         if message_format != 'raw':
             data = dict(await request.post())
