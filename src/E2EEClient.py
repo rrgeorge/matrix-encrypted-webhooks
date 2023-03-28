@@ -3,8 +3,10 @@ import json
 import logging
 import os
 import sys
+import re
 from typing import Optional
-
+from MastodonFunctions import sendWelcomeMessage, checkEmail
+import IPInfo
 from markdown import markdown
 from nio import (
     AsyncClient,
@@ -12,6 +14,7 @@ from nio import (
     LoginResponse,
     MatrixRoom,
     RoomMessageText,
+    UnknownEvent,
     SyncResponse,
 )
 from termcolor import colored
@@ -112,7 +115,65 @@ class E2EEClient:
         ))
         if event.body == "!users":
             await self.get_users(room.room_id)
+        if event.body.startswith("!checkemail "):
+            await self.get_checkemail(room.room_id, event.body[12:].strip())
+        if event.body.startswith("!checkip "):
+            await self.get_checkip(room.room_id, event.body[9:].strip())
+        if event.body == "!testwelcome":
+            sendWelcome = sendWelcomeMessage("raphus")
+            await self.send_message(sendWelcome, room.room_id, 'command')
+        if event.body == "!help":
+            await self.send_message((
+                "I understand the following commands:  \n"
+                "> `!users`  \n"
+                ">> Get current user stats  \n\n"
+                "> `!checkip <ip address>`  \n"
+                ">> Get info about given ip address  \n"
+                ">> Can also be invoked by reacting 💻 to a New User message  \n\n"
+                "> `!checkemail <username>`  \n"
+                ">> Check if given user has confirmed their email address yet  \n"
+                ">> Can also be invoked by reacting 📧 to a New User message"
+                ), room.room_id, 'command')
         await self.client.update_receipt_marker(room.room_id, event.event_id)
+
+    async def _emote_callback(self, room: MatrixRoom, event: UnknownEvent) -> None:
+        try:
+            if event.type != 'm.reaction':
+                return
+            reaction = event.source['content']['m.relates_to']
+            src_event = await self.client.room_get_event(room.room_id, reaction['event_id'])
+            message = src_event.event.body
+            if message.startswith('## New account created'):
+                if reaction['key'] in ['📧', '✉️', '📩']:
+                    username = re.search(r'\*\*User:\*\* `(.*?)`', message).group(1)
+                    if checkEmail(username):
+                        new_message = message.replace('*(not confirmed)*', '*(confirmed)*')
+                        await self.send_message(
+                            new_message,
+                            room.room_id,
+                            'reaction',
+                            False,
+                            reaction['event_id']
+                        )
+                    # await self.get_checkemail(room.room_id, username)
+                elif reaction['key'] == '💻':
+                    ip = re.search(r'\*\*IP:\*\* `(.*?)`', message).group(1)
+                    await self.get_checkip(room.room_id, ip)
+            elif reaction['key'] == '📝':
+                logging.info(f"Received memo, sending edit\n{message}")
+                logging.info(str(src_event.event))
+                await self.send_message(
+                        message + "  \n\nEdited.",
+                        room.room_id,
+                        'reaction',
+                        False,
+                        reaction['event_id']
+                )
+            else:
+                logging.info(f"Not sure what to do with {reaction['key']}")
+        except Exception as e:
+            err = str(e)
+            logging.error(f"Error: {err}")
 
     async def _sync_callback(self, response: SyncResponse) -> None:
         logging.info(f"We synced, token: {response.next_batch}")
@@ -131,7 +192,8 @@ class E2EEClient:
         message: str,
         room: str,
         sender: str,
-        sync: Optional[bool] = False
+        sync: Optional[bool] = False,
+        replacing: Optional[str] = None
     ) -> None:
         if sync:
             await self.client.sync(timeout=3000, full_state=True)
@@ -144,6 +206,15 @@ class E2EEClient:
             'msgtype': 'm.text',
             'body': f"{msg_prefix}{message}",
         }
+        if replacing:
+            content['m.relates_to'] = {
+                'rel_type': 'm.replace',
+                'event_id': replacing
+            }
+            content['m.new_content'] = {
+                'msgtype': 'm.text',
+                'body': f"{msg_prefix}{message}",
+            }
         if os.environ['USE_MARKDOWN'] == 'True':
             # Markdown formatting removes YAML newlines if not padded with spaces,
             # and can also mess up posted data like system logs
@@ -152,6 +223,10 @@ class E2EEClient:
             content['format'] = 'org.matrix.custom.html'
             content['formatted_body'] = markdown(
                 f"{msg_prefix}{message}", extensions=['extra'])
+            if replacing:
+                content['m.new_content']['format'] = 'org.matrix.custom.html'
+                content['m.new_content']['formatted_body'] = markdown(
+                    f"{msg_prefix}{message}", extensions=['extra'])
 
         await self.client.room_send(
             room_id=room,
@@ -168,14 +243,52 @@ class E2EEClient:
                     stats = (
                             f"## Current User Stats:  \n"
                             f"**Active users:** {json['usage']['users']['activeMonth']},  \n"
-                            f"**Total users**: {json['usage']['users']['total']}"
+                            f"**Total users**: {json['usage']['users']['total']},  \n"
+                            f"**Total Posts:** {json['usage']['localPosts']}"
                             )
-                    await self.send_message(stats, room, 'Command')
+                    await self.send_message(stats, room, 'command')
+
+    async def get_checkemail(self, room, user) -> None:
+        emailstatus = checkEmail(user)
+        if isinstance(emailstatus, bool):
+            if not emailstatus:
+                await self.send_message(f"User '{user}' has not confirmed their email yet.",
+                                        room,
+                                        'command')
+            else:
+                await self.send_message(f"User '{user}' has confirmed their email.",
+                                        room,
+                                        'command')
+        else:
+            await self.send_message(f"Could not check user '{user}': {emailstatus}",
+                                    room,
+                                    'command')
+
+    async def get_checkip(self, room, ip) -> None:
+        ipRisk = IPInfo.getIPRisk(ip)
+        rblRisk = IPInfo.checkRBL(ip)
+        ipInfo = IPInfo.getIP(ip)
+        ipRep = "No known risk"
+        risk = []
+        if rblRisk:
+            risk.append(rblRisk)
+        if ipRisk:
+            risk.append(ipRisk)
+        if rblRisk or ipRisk:
+            riskTxt = ", ".join(risk)
+            ipRep = f"**IP Reputation:** {riskTxt}"
+        await self.send_message((
+            f"**IP:** `{ip}` *({ipInfo})* [More info at IPinfo.io](https://ipinfo.io/{ip})  \n"
+            f"{ipRep}"
+            ),
+            room,
+            'command')
 
     async def run(self) -> None:
         await self.login()
 
         self.client.add_event_callback(self._message_callback, RoomMessageText)
+        self.client.add_event_callback(self._emote_callback, UnknownEvent)
         self.client.add_response_callback(self._sync_callback, SyncResponse)
         if self.client.should_upload_keys:
             await self.client.keys_upload()
