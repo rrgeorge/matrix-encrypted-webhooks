@@ -34,7 +34,7 @@ class WebhookServer:
 
         return known_rooms
 
-    def _format_message(self, msg_format: str, allow_unicode: bool, data) -> str:
+    async def _format_message(self, msg_format: str, allow_unicode: bool, data) -> str:
         if msg_format == 'json':
             return json.dumps(data, indent=2, ensure_ascii=(not allow_unicode))
         if msg_format == 'yaml':
@@ -43,7 +43,7 @@ class WebhookServer:
             message = data['message'].replace("\n", "  \n")
             return f"## {data['title']}  {os.linesep}{message}"
         if msg_format == 'mastodon':
-            return formatMastodonHook(data)
+            return await formatMastodonHook(data)
 
     async def _get_index(self, request: web.Request) -> web.Response:
         return web.json_response({'success': True})
@@ -83,7 +83,7 @@ class WebhookServer:
             finally:
                 logging.debug(f"Decoded data: {data}")
 
-            data = self._format_message(message_format, allow_unicode, data)
+            data = await self._format_message(message_format, allow_unicode, data)
 
         logging.debug(f"{message_format.upper()} formatted data: {data}")
         await self.matrix_client.send_message(

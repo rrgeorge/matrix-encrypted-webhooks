@@ -1,17 +1,21 @@
 import geoip2.database
-
+import aiohttp
+import os
 
 def getIP(ip):
     with geoip2.database.Reader('/var/lib/GeoIP/GeoLite2-City.mmdb') as reader:
-        response = reader.city(ip)
         locale = []
-        if response.city.name:
-            locale.append(response.city.name)
-        for subdivision in response.subdivisions[::-1]:
-            locale.append(subdivision.name)
-        if response.country.name:
-            locale.append(response.country.name)
-        return(", ".join(locale))
+        try:
+            response = reader.city(ip)
+            if response.city.name:
+                locale.append(response.city.name)
+            for subdivision in response.subdivisions[::-1]:
+                locale.append(subdivision.name)
+            if response.country.name:
+                locale.append(response.country.name)
+        except Exception as e:
+            print("Error getting IP info", e)
+        return ", ".join(locale)
 
 
 def getIPRisk(ip):
@@ -79,12 +83,14 @@ def getIPRisk(ip):
         'ZW': 'Zimbabwe',
     }
     with geoip2.database.Reader('/var/lib/GeoIP/GeoLite2-Country.mmdb') as reader:
-        response = reader.country(ip)
-        country = response.country.iso_code
-        if country in high_risk_countries:
-            return "High risk country"
-        else:
-            return None
+        try:
+            response = reader.country(ip)
+            country = response.country.iso_code
+            if country in high_risk_countries:
+                return "High risk country"
+        except Exception as e:
+            print("Error getting IP info", e)
+        return None
 
 
 def checkRBL(ip):
@@ -118,3 +124,16 @@ def checkRBL(ip):
         risk = None
         pass
     return risk
+
+
+async def checkIPRep(ip):
+    async with aiohttp.ClientSession() as session:
+        async with session.get((
+            "https://ipqualityscore.com/api/json/ip"
+            f"/{os.environ['IPQUALITY_TOKEN']}"
+            f"/{ip}"
+        )) as response:
+            if response.status == 200:
+                json = await response.json()
+                print(json)
+                return json
