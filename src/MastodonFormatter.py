@@ -13,7 +13,7 @@ async def formatMastodonHook(data):
             email = f"`{account['email']}`"
             if not account['confirmed']:
                 email += " *(not confirmed)*"
-            if email.partition('@')[2] in blocklist:
+            if f"`{account['email']}`".partition('@')[2] in blocklist:
                 email += (
                         "  \n🕳️ **Disposable Email:** "
                         "This looks like it might be a disposable email address  \n"
